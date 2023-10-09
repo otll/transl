@@ -16,12 +16,32 @@ import (
 	"time"
 )
 
+func init() {
+	// dir of current file
+	_, filePath, _, _ := runtime.Caller(0)
+	dirPath := path.Dir(filePath)
+	cookiesFilePath = filepath.Join(dirPath, ".saved_cookies")
+	baiDuJSPath = filepath.Join(dirPath, "baidu.js")
+}
+
+var (
+	cookiesFilePath string
+	baiDuJSPath     string
+)
+
+const cookiesExpireDefault = 60 * 60 * 24 // second
+
 type BaiduResult struct {
 	TransResult struct {
 		Data []struct {
 			Dst string `json:"dst"`
 		} `json:"data"`
 	} `json:"trans_result"`
+}
+
+type LocalCookies struct {
+	Cookies string `json:"cookies"`
+	Ts      int    `json:"ts"`
 }
 
 func getBaiduResult(baiduResult BaiduResult) string {
@@ -80,16 +100,64 @@ func baiduTranslateTokenCookie(cookies string) (string, string) {
 	return "", cookiesStr
 }
 
-func getTokenCookie() (string, string) {
-	_, cookies := baiduTranslateTokenCookie("")
+func initCookiesHttp(isSave bool) (cookies string) {
+	_, cookies = baiduTranslateTokenCookie("")
+	if isSave == true {
+		file, err := os.OpenFile(cookiesFilePath, os.O_TRUNC|os.O_WRONLY|os.O_CREATE, 0666)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer file.Close()
+
+		n, err := file.WriteString(fmt.Sprintf(`{"cookies": "%s", "ts": %v}`, cookies, time.Now().Unix()))
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println("write", n)
+
+	}
+	return
+}
+
+func initCookiesSaved() (cookies string) {
+	// open file
+	cookiesContent, err := os.ReadFile(cookiesFilePath)
+
+	if err != nil {
+		if isExists := os.IsExist(err); isExists == false {
+			cookies = initCookiesHttp(true)
+			return initCookiesSaved()
+		}
+		log.Fatal(err)
+	}
+	var localCookies LocalCookies
+	if err := json.Unmarshal(cookiesContent, &localCookies); err != nil {
+		log.Fatal(err)
+	}
+	if int(time.Now().Unix())-localCookies.Ts > cookiesExpireDefault {
+		if err := os.Remove(cookiesFilePath); err != nil {
+			log.Fatal(err)
+		}
+		return initCookiesSaved()
+	}
+	return localCookies.Cookies
+}
+
+//func cookiesSave() {
+//	os.f
+//}
+
+func initCookies() (cookies string) {
+	//return initCookiesHttp(false)
+	return initCookiesSaved()
+}
+
+func getTokenCookies(cookies string) (token string, newCookies string) {
 	return baiduTranslateTokenCookie(cookies)
 }
 
 func getSign(keyword string) string {
-
-	_, filePath, _, _ := runtime.Caller(0)
-	dirPath := path.Dir(filePath)
-	script := openFile(filepath.Join(dirPath, "baidu.js"))
+	script := openFile(baiDuJSPath)
 
 	vm := goja.New()
 	_, err := vm.RunString(script)
@@ -113,7 +181,9 @@ func openFile(name string) string {
 }
 
 func Transl(keyword string) string {
-	token, cookies := getTokenCookie()
+	// init cookies
+	cookies := initCookies()
+	token, cookies := getTokenCookies(cookies)
 	sign := getSign(keyword)
 
 	body := strings.NewReader(fmt.Sprintf(`from=en&to=zh&query=%s&transtype=realtime&simple_means_flag=3&sign=%s&token=%s&domain=common&ts=%v`, keyword, sign, token, time.Now().UnixMilli()))
